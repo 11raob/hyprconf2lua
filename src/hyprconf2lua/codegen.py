@@ -662,6 +662,22 @@ class Codegen:
         effects = {}
 
         for mp in match_params:
+            if mp.startswith("match:"):
+                rest = mp[len("match:"):].strip()
+                m = re.match(r'^([a-zA-Z0-9_-]+)(?:\s*=\s*|\s*:\s*|\s+)(.*)$', rest)
+                if m:
+                    match_key, value = m.groups()
+                else:
+                    match_key = rest
+                    value = "true"
+                if value.lower() == "true":
+                    match[match_key] = "true"
+                elif value.lower() == "false":
+                    match[match_key] = "false"
+                else:
+                    match[match_key] = self.quote(value)
+                continue
+
             colon_idx = mp.find(":")
             if colon_idx > 0:
                 prefix = mp[:colon_idx].strip()
