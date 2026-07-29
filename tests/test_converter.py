@@ -684,3 +684,24 @@ def test_windowrule_match_class_complex():
     result2 = convert("windowrule = workspace special:T silent, match:class:^(T)$\n")
     assert result2.success
     assert "class = \"^(T)$\"" in result2.lua
+
+
+def test_env_var_resolution():
+    result = convert('env = AQ_DRM_DEVICES,$HOME/.config/hypr/cards/intelcard:$HOME/.config/hypr/cards/nvidiacard\n')
+    assert result.success
+    assert 'os.getenv("HOME")' in result.lua
+    assert "local_var_HOME" not in result.lua
+
+
+def test_hyphen_to_underscore_in_device():
+    result = convert('device {\n    name = touchpad\n    tap-to-click = true\n}\n')
+    assert result.success
+    assert "tap_to_click" in result.lua
+    assert "tap-to-click" not in result.lua
+
+
+def test_hyphen_to_underscore_in_general():
+    result = convert('general {\n    no-cursor = true\n}\n')
+    assert result.success
+    assert "no_cursor" in result.lua
+    assert "no-cursor" not in result.lua
