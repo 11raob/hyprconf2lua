@@ -12,8 +12,10 @@ TOKEN_SPECS = [
     ("COMMA",      r","),
     ("DOT",        r"\."),
     ("COLON",      r":"),
+    ("SHELL_EXP",  r"\$\{[^}\n]*\}"),
     ("DOLLAR",     r"\$"),
     ("STRING",     r'"([^"\\]|\\.)*"'),
+    ("CONT",       r"\\[ \t]*\n"),
     ("IDENT",      r'[^\s#"={},:!]+'),
     ("NEWLINE",    r"\n"),
     ("SKIP",       r"[ \t]+"),
@@ -59,6 +61,9 @@ def tokenize(source: str) -> List[Token]:
             line += 1
             last_line_start = pos + 1
             tokens.append(Token("NEWLINE", value, line - 1, _col(pos)))
+        elif kind == "CONT":
+            line += 1
+            last_line_start = m.end()
         elif kind == "SKIP":
             pass
         elif kind == "COMMENT":

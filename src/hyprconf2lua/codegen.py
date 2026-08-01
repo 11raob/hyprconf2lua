@@ -129,6 +129,16 @@ class Codegen:
             return "local_var_" + var_name
         return re.sub(r'\$(\w+)', _repl, val)
 
+    def resolve_val_exec(self, val: str) -> str:
+        def _repl(m: re.Match) -> str:
+            var_name = m.group(1)
+            if var_name in self.variables:
+                return self.variables[var_name]
+            if var_name in os.environ:
+                return f'os.getenv("{var_name}")'
+            return m.group(0)
+        return re.sub(r'\$(\w+)', _repl, val)
+
     def _build_concat_expr(self, val: str) -> str:
         parts = re.split(r'(os\.getenv\([^)]+\))', val)
         expr_parts = []
@@ -209,7 +219,7 @@ class Codegen:
                     break
 
     def _exec_lua_expr(self, cmd: str) -> str:
-        resolved = self.resolve_val_with_env(cmd)
+        resolved = self.resolve_val_exec(cmd)
         if resolved.startswith("$") and resolved[1:] in self.variables:
             return resolved[1:]
         if "os.getenv(" in resolved:
@@ -267,6 +277,8 @@ class Codegen:
         return f"{{ colors = {{ {', '.join(colors)} }}, angle = {angle} }}"
 
     def _emit_directive(self, key: str, values: List[str]):
+        if not values or all(not v.strip() for v in values):
+            return
         key = self._normalize_key(key)
         if len(values) == 1 and self._is_gradient(values[0]):
             self.translated_count += 1
@@ -320,7 +332,7 @@ class Codegen:
                         self.passthrough_count += 1
                         self.emit(f"-- Nested subsection {sd.name}:")
                         for ssd in sd.body:
-                            if isinstance(ssd, Directive):
+                            if isinstance(ssd, Directive) and ssd.value and ssd.value[0].strip():
                                 k = self._normalize_key(ssd.key)
                                 vv = self.to_lua_val(ssd.value[0]) if ssd.value else "true"
                                 self.emit(f"{k} = {vv},")
@@ -341,6 +353,8 @@ class Codegen:
         self.indent()
         for d in directives:
             key = self._normalize_key(d.key)
+            if not d.value or not d.value[0].strip():
+                continue
             if len(d.value) == 1:
                 val = self.to_lua_val(d.value[0])
                 self.emit(f"{key} = {val},")
@@ -603,7 +617,7 @@ class Codegen:
 
             if dispatcher in ("exec", "execr"):
                 raw = params[0] if params else ""
-                resolved = self.resolve_val_with_env(raw)
+                resolved = self.resolve_val_exec(raw)
                 if "os.getenv(" in resolved:
                     return f'{func}({self._build_concat_expr(resolved)})'
                 return f'{func}({self.quote(resolved)})'
@@ -782,6 +796,8 @@ class Codegen:
 
         for key, vals in stmt.effects.items():
             key = self._normalize_key(key)
+            if not vals or not vals[0].strip():
+                continue
             if len(vals) == 1:
                 parts = vals[0].split()
                 if len(parts) == 1:
@@ -859,13 +875,24 @@ class Codegen:
         val_expr = self.to_lua_val(stmt.value)
         self.emit(f"hl.env({name_q}, {val_expr})")
 
+    @staticmethod
+    def _sanitize_ident(s: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_]", "_", s)
+
+    def _source_module_path(self, path: str) -> str:
+        p = path.strip()
+        for marker in ("/.config/hypr/", "/.config/", "$XDG_CONFIG_HOME/", "$HOME/", "~/"):
+            if marker in p:
+                p = p.split(marker, 1)[1]
+                break
+        else:
+            p = p.lstrip("/")
+        p = p.replace(".conf", "")
+        return ".".join(self._sanitize_ident(part) for part in p.split("/") if part)
+
     def visit_source(self, stmt: SourceDirective):
         self.passthrough_count += 1
         path = stmt.path
-
-        lua_path = path.replace(".conf", "")
-        lua_path = lua_path.replace("~", "os.getenv(\"HOME\")")
-        lua_path = lua_path.replace("/", ".")
 
         if path.endswith("/*.conf"):
             self.emit(f'-- source = {path}')
@@ -873,11 +900,10 @@ class Codegen:
             self.emit(f"-- Directory contents must be required individually")
             return
 
+        module = self._source_module_path(path)
+        local_name = module.split(".")[-1]
         self.emit(f'-- source = {path} -> requires manual conversion')
-
-        import os as _os
-        just_name = _os.path.splitext(_os.path.basename(path))[0]
-        self.emit(f'-- local {just_name} = require("{just_name}")')
+        self.emit(f'-- local {local_name} = require("{module}")')
         self.emit(f'-- TODO: convert {path} to .lua and use require()')
 
     def visit_device(self, stmt: DeviceSection):
@@ -886,7 +912,7 @@ class Codegen:
         self.indent()
         self.emit(f'name = {self.quote(stmt.name)},')
         for d in stmt.body:
-            if isinstance(d, Directive):
+            if isinstance(d, Directive) and d.value and d.value[0].strip():
                 key = self._normalize_key(d.key)
                 val = self.to_lua_val(d.value[0]) if d.value else "true"
                 self.emit(f"{key} = {val},")
@@ -988,6 +1014,8 @@ class Codegen:
 
         for key, vals in stmt.effects.items():
             key = self._normalize_key(key)
+            if not vals or not vals[0].strip():
+                continue
             if len(vals) == 1:
                 parts = vals[0].split()
                 if len(parts) == 1:

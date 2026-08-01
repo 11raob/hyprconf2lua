@@ -705,3 +705,55 @@ def test_hyphen_to_underscore_in_general():
     assert result.success
     assert "no_cursor" in result.lua
     assert "no-cursor" not in result.lua
+
+
+def test_leading_dot_float():
+    result = convert("input {\n    scale = .97\n}\n")
+    assert result.success
+    assert "scale = .97," in result.lua
+    assert '". 97"' not in result.lua
+
+
+def test_empty_value_skipped():
+    result = convert("input {\n    kb_layout = es\n    kb_variant =\n    kb_model =\n}\n")
+    assert result.success
+    assert "kb_layout" in result.lua
+    assert "kb_variant" not in result.lua
+    assert "kb_model" not in result.lua
+    assert "{  }" not in result.lua
+
+
+def test_source_filename_hyphens_sanitized():
+    result = convert("source = ~/.config/hypr/media-binds.conf\n")
+    assert result.success
+    assert 'require("media_binds")' in result.lua
+    assert "local media-binds" not in result.lua
+
+
+def test_source_path_mapped_to_module():
+    result = convert("source = $HOME/.config/hypr/modules/keybinds.conf\n")
+    assert result.success
+    assert 'require("modules.keybinds")' in result.lua
+
+
+def test_shell_brace_expansion():
+    result = convert("exec-once = xrdb ${XDG_CONFIG_HOME:-$HOME/.config}/x11/xresources\n")
+    assert result.success
+    assert "xrdb ${XDG_CONFIG_HOME:-" in result.lua
+    assert "os.getenv(\"HOME\")" in result.lua
+    assert "/x11/xresources" in result.lua
+
+
+def test_multiline_exec_continuation():
+    src = (
+        "bind = ,print, exec, \\\n"
+        '  FILE=~/Pictures/screenshot_$(date +%s).png; \\\n'
+        '  grim -g "$(slurp)" "$FILE" && wl-copy < "$FILE" && \\\n'
+        '  notify-send "Screenshot saved" -i "$FILE"\n'
+    )
+    result = convert(src)
+    assert result.success
+    assert 'hl.dsp.exec_cmd("FILE=~/Pictures/screenshot_$(date +%s).png;' in result.lua
+    assert '\\"$(slurp)\\"' in result.lua
+    assert "$FILE" in result.lua
+    assert "local_var_FILE" not in result.lua

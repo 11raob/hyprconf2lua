@@ -137,7 +137,7 @@ class Parser:
 
     def parse_value_rest(self) -> str:
         parts = []
-        while self.peek().type in ("IDENT", "STRING", "DOLLAR", "DOT", "COLON") or \
+        while self.peek().type in ("IDENT", "STRING", "DOLLAR", "SHELL_EXP", "DOT", "COLON") or \
               (self.peek().type == "EQUALS" and parts):
             if self.peek().type == "COMMENT":
                 break
@@ -160,14 +160,14 @@ class Parser:
         result = tokens[0]
         for t in tokens[1:]:
             no_space_before = {":", ",", "=", "+", "-", "%", "@", "^", "*", "|", "~"}
-            no_space_after = {":", ",", "="}
-            if t in no_space_before or result[-1:] in no_space_after:
+            no_space_after = {":", ",", "=", "."}
+            if t in no_space_before or result[-1:] in no_space_after or t.startswith(("/", ".")):
                 result += t
             else:
                 result += " " + t
         return result.strip()
 
-    def parse_comma_values(self) -> List[str]:
+    def parse_comma_values(self, keep_string_quotes: bool = False) -> List[str]:
         values = []
         current = []
         while self.peek().type not in ("NEWLINE", "EOF") and \
@@ -200,7 +200,10 @@ class Parser:
                 current.append("$" + var_t.value)
             else:
                 t = self.advance()
-                current.append(t.value)
+                if keep_string_quotes and t.type == "STRING":
+                    current.append('"' + t.value + '"')
+                else:
+                    current.append(t.value)
         remaining = self._join_tokens(current)
         if remaining:
             values.append(remaining)
@@ -296,6 +299,8 @@ class Parser:
         if t.type == "EQUALS":
             self.advance()
             values = self.parse_comma_values()
+            if not values or all(not v.strip() for v in values):
+                return None
             return Directive(directive, values, line, 0)
         if t.type == "BLOCK_OPEN":
             self.advance()
@@ -308,7 +313,7 @@ class Parser:
         flags = _parse_combined_bind(directive)
         self.expect("EQUALS")
         self.skip_newlines()
-        values = self.parse_comma_values()
+        values = self.parse_comma_values(keep_string_quotes=True)
         if len(values) < 3:
             raise ParserError(f"bind needs at least 3 arguments (mods, key, dispatcher), got {len(values)}", Token("IDENT", directive, line, 0))
         mods_str = values[0].strip()
@@ -416,10 +421,10 @@ class Parser:
 
     def parse_exec(self, directive: str, line: int) -> ExecDirective:
         self.expect("EQUALS")
-        command = self.parse_line_rest()
+        command = self.parse_line_rest(keep_string_quotes=True)
         return ExecDirective(directive, command, line)
 
-    def parse_line_rest(self) -> str:
+    def parse_line_rest(self, keep_string_quotes: bool = False) -> str:
         parts = []
         while self.peek().type not in ("NEWLINE", "EOF", "COMMENT", "BLOCK_CLOSE"):
             if self.peek().type == "DOLLAR":
@@ -428,7 +433,10 @@ class Parser:
                 parts.append("$" + var_t.value)
             else:
                 t = self.advance()
-                parts.append(t.value)
+                if keep_string_quotes and t.type == "STRING":
+                    parts.append('"' + t.value + '"')
+                else:
+                    parts.append(t.value)
         return self._join_tokens(parts)
 
     def parse_animation(self, line: int) -> AnimationDirective:
