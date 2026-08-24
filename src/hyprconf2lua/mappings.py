@@ -17,7 +17,8 @@ DISPATCHER_MAP = {
     "movefocus":         ("hl.dsp.focus", True),
     "movewindow":        ("hl.dsp.window.move", True),
     "swapwindow":        ("hl.dsp.window.swap", True),
-    "swapnext":          ("hl.dsp.window.swap", True),
+    # "swapnext":          ("hl.dsp.window.swap", True),  # bug: change to `False`
+    "swapnext":          ("hl.dsp.window.swap", False),
     "centerwindow":      ("hl.dsp.window.center", False),
     "resizewindow":      ("hl.dsp.window.resize", True),
     "movecursor":        ("hl.dsp.cursor.move", True),
@@ -27,6 +28,10 @@ DISPATCHER_MAP = {
     "changegroupactive": ("hl.dsp.group.next", False),
     "focusgroupwindow":  ("hl.dsp.group.active", True),
     "movegroupwindow":   ("hl.dsp.group.move_window", True),
+    # Add the following three lines:
+    "lockactivegroup":   ("hl.dsp.group.lock_active", True),
+    "moveactive":        ("hl.dsp.window.move", True),
+    "bringactivetotop":  ("hl.dsp.window.bring_to_top", False),
     "lockgroups":        ("hl.dsp.group.lock", False),
     "workspace":         ("hl.dsp.focus", True),
     "movetoworkspace":   ("hl.dsp.window.move", True),

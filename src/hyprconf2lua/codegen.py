@@ -284,8 +284,8 @@ class Codegen:
         key = self._normalize_key(key)
         if len(values) > 1 and key == "enabled":
             values = values[:1]
-        if ":" in key:
-            parts = [self._normalize_key(p) for p in key.split(":")]
+        if ":" in key or "." in key:
+            parts = [self._normalize_key(p) for p in re.split(r"[:.]", key)]
             inner = f"{parts[-1]} = {{ {', '.join(self.to_lua_val(v) for v in values)} }}"
             if len(values) == 1 and self._is_gradient(values[0]):
                 inner = f"{parts[-1]} = {self._format_gradient(values[0])}"
@@ -341,19 +341,29 @@ class Codegen:
                 sub_name = d.name
                 self.emit(f"{sub_name} = {{")
                 self.indent()
-                for sd in d.body:
+                for sd in self._group_section_body(d.body):
                     if isinstance(sd, Comment):
                         self.emit(f"--{sd.text[1:]}")
                     elif isinstance(sd, Directive):
                         self._emit_directive(sd.key, sd.value)
+                    #elif isinstance(sd, Section):
+                        #self.passthrough_count += 1
+                        #self.emit(f"-- Nested subsection {sd.name}:")
+                        #for ssd in sd.body:
+                            #if isinstance(ssd, Directive) and ssd.value and ssd.value[0].strip():
+                                #k = self._normalize_key(ssd.key)
+                                #vv = self.to_lua_val(ssd.value[0]) if ssd.value else "true"
+                                #self.emit(f"{k} = {vv},")
                     elif isinstance(sd, Section):
-                        self.passthrough_count += 1
-                        self.emit(f"-- Nested subsection {sd.name}:")
+                        self.emit(f"{self._normalize_key(sd.name)} = {{")
+                        self.indent()
                         for ssd in sd.body:
-                            if isinstance(ssd, Directive) and ssd.value and ssd.value[0].strip():
-                                k = self._normalize_key(ssd.key)
-                                vv = self.to_lua_val(ssd.value[0]) if ssd.value else "true"
-                                self.emit(f"{k} = {vv},")
+                            if isinstance(ssd, Comment):
+                                self.emit(f"--{ssd.text[1:]}")
+                            elif isinstance(ssd, Directive):
+                                self._emit_directive(ssd.key, ssd.value)
+                        self.dedent()
+                        self.emit("},")
                     elif isinstance(sd, (AnimationDirective, BezierDirective, GestureDirective)):
                         deferred.append(sd)
                 self.dedent()
@@ -573,6 +583,11 @@ class Codegen:
         return result
 
     def build_dispatcher(self, dispatcher: str, params: List[str]) -> Optional[str]:
+        if dispatcher == "workspaceopt":
+            if not params:
+                return None
+            return f'hl.dsp.exec_cmd({self.quote("hyprctl dispatch workspaceopt " + params[0])})'
+
         if dispatcher in DISPATCHER_MAP:
             func, needs_args = DISPATCHER_MAP[dispatcher]
 
