@@ -757,3 +757,118 @@ def test_multiline_exec_continuation():
     assert '\\"$(slurp)\\"' in result.lua
     assert "$FILE" in result.lua
     assert "local_var_FILE" not in result.lua
+
+
+def test_movecurrentworkspacetomonitor_dispatcher():
+    result = convert("bind = CTRL $mainMod SHIFT, comma, movecurrentworkspacetomonitor, l\n")
+    assert result.success
+    assert 'hl.dsp.workspace.move({ monitor = "l" })' in result.lua
+
+
+def test_stdin_hyphen_whitespace_preserved():
+    src = 'bind = , Print, exec, grim -c -g "$(slurp)" - | satty --filename -\n'
+    result = convert(src)
+    assert result.success
+    assert 'grim -c -g \\"$(slurp)\\" - | satty --filename -' in result.lua
+
+
+def test_animations_inside_section_translated():
+    src = (
+        "animations {\n"
+        "    enabled = yes, please :)\n"
+        "    bezier = easeOutQuint, 0.23, 1, 0.32, 1\n"
+        "    animation = windowsIn, 1, 4.1, easeOutQuint, popin 87%\n"
+        "}\n"
+    )
+    result = convert(src)
+    assert result.success
+    assert "enabled = true," in result.lua
+    assert 'hl.curve("easeOutQuint"' in result.lua
+    assert 'leaf = "windowsIn"' in result.lua
+    assert 'style = "popin 87%"' in result.lua
+    # statements must be outside the hl.config table (valid Lua)
+    cfg_end = result.lua.index("})")
+    assert "hl.animation" in result.lua[cfg_end:]
+
+
+def test_animation_disabled_flag():
+    result = convert("animation = fadeOut, 0, 1.46, linear\n")
+    assert result.success
+    assert "enabled = false" in result.lua
+
+
+def test_windowrule_block_multword_string():
+    result = convert('windowrule {\n    name = w\n    workspace = 3 silent\n}\n')
+    assert result.success
+    assert 'workspace = "3 silent"' in result.lua
+    assert "{ 3," not in result.lua
+
+
+def test_windowrule_match_prefix_style():
+    result = convert("windowrule = match:class ^(pavucontrol)$, float on\n")
+    assert result.success
+    assert 'class = "^(pavucontrol)$"' in result.lua
+    assert "float = true" in result.lua
+
+
+def test_windowrule_multi_match_and_move():
+    result = convert("windowrule = match:class ^(wofi)$, match:title ^(clippick)$, move 100%-433 53\n")
+    assert result.success
+    assert 'class = "^(wofi)$"' in result.lua
+    assert 'title = "^(clippick)$"' in result.lua
+    assert '{ "100%-433", 53 }' in result.lua
+
+
+def test_layerrule_keyvalue_and_match_namespace():
+    result = convert("layerrule = blur=on, match:namespace ^(swaylock)$\n")
+    assert result.success
+    assert 'namespace = "^(swaylock)$"' in result.lua
+    assert "blur = true" in result.lua
+
+
+def test_gesture_inline_in_section():
+    result = convert("gestures {\n    workspace_swipe_invert = true\n    gesture = 3, horizontal, workspace\n}\n")
+    assert result.success
+    assert "hl.gesture({" in result.lua
+    assert '"horizontal"' in result.lua
+    gest_pos = result.lua.index("hl.gesture")
+    cfg_pos = result.lua.index("})")
+    assert gest_pos > cfg_pos
+
+
+def test_movewindow_direction_expanded():
+    result = convert("bind = SUPER SHIFT, L, movewindow, l\n")
+    assert result.success
+    assert 'hl.dsp.window.move({ direction = "left" })' in result.lua
+
+
+def test_resizeactive_dispatcher():
+    result = convert("bind = SUPER SHIFT, H, resizeactive, -40 0\n")
+    assert result.success
+    assert "hl.dsp.window.resize({ x = -40, y = 0, relative = true })" in result.lua
+
+
+def test_movewindow_workspace_delta():
+    result = convert("bind = SUPER, W, movewindow, +0\n")
+    assert result.success
+    assert '{ workspace = "+0" }' in result.lua
+
+
+def test_layoutmsg_without_args_flagged():
+    result = convert("bind = SUPER, J, layoutmsg\n")
+    assert result.success
+    assert "TODO" in result.lua
+    assert "nil)" not in result.lua.replace("-- hl.bind", "")
+
+
+def test_comma_in_variable_value():
+    result = convert("$kbNextWs = Ctrl+Super, right\n")
+    assert result.success
+    assert '"Ctrl+Super, right"' in result.lua
+
+
+def test_rgba_color_values():
+    result = convert("decoration:shadow:color = rgba(0,0,0,0.85)\n")
+    assert result.success
+    assert '"rgba(0,0,0,0.85)"' in result.lua
+    assert "shadow = { color =" in result.lua

@@ -79,6 +79,7 @@ class AnimationDirective:
     speed: str
     curve: str
     line: int
+    enabled: str = "1"
 
 
 @dataclass

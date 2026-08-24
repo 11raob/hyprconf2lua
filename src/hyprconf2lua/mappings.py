@@ -52,6 +52,8 @@ DISPATCHER_MAP = {
     "focusurgentorlast": ("hl.dsp.focus", True),
     "focusonemonitor":   ("hl.dsp.focus", True),
     "forcekillactive":   ("hl.dsp.window.kill", False),
+    "resizeactive":      ("hl.dsp.window.resize", True),
+    "movecurrentworkspacetomonitor": ("hl.dsp.workspace.move", True),
 }
 
 BIND_FLAGS_TO_OPTIONS = {

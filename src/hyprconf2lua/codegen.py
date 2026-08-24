@@ -16,6 +16,8 @@ KNOWN_SECTIONS = {
     "autostart", "window", "monitor", "workspace", "layer",
 }
 
+MULTI_VALUE_EFFECT_KEYS = {"move", "size", "opacity", "alpha"}
+
 
 class Codegen:
     def __init__(self):
@@ -280,6 +282,20 @@ class Codegen:
         if not values or all(not v.strip() for v in values):
             return
         key = self._normalize_key(key)
+        if len(values) > 1 and key == "enabled":
+            values = values[:1]
+        if ":" in key:
+            parts = [self._normalize_key(p) for p in key.split(":")]
+            inner = f"{parts[-1]} = {{ {', '.join(self.to_lua_val(v) for v in values)} }}"
+            if len(values) == 1 and self._is_gradient(values[0]):
+                inner = f"{parts[-1]} = {self._format_gradient(values[0])}"
+            elif len(values) == 1:
+                inner = f"{parts[-1]} = {self.to_lua_val(values[0])}"
+            for p in reversed(parts[:-1]):
+                inner = f"{p} = {{ {inner} }}"
+            self.translated_count += 1
+            self.emit(f"{inner},")
+            return
         if len(values) == 1 and self._is_gradient(values[0]):
             self.translated_count += 1
             self.emit(f"{key} = {self._format_gradient(values[0])},")
@@ -311,6 +327,8 @@ class Codegen:
         if not directives:
             return
 
+        deferred: List[BlockStmt] = []
+
         self.emit(f"hl.config({{")
         self.indent()
         self.emit(f"{section_name} = {{")
@@ -336,15 +354,22 @@ class Codegen:
                                 k = self._normalize_key(ssd.key)
                                 vv = self.to_lua_val(ssd.value[0]) if ssd.value else "true"
                                 self.emit(f"{k} = {vv},")
+                    elif isinstance(sd, (AnimationDirective, BezierDirective, GestureDirective)):
+                        deferred.append(sd)
                 self.dedent()
                 self.emit("},")
             elif isinstance(d, Directive):
                 self._emit_directive(d.key, d.value)
+            elif isinstance(d, (AnimationDirective, BezierDirective, GestureDirective)):
+                deferred.append(d)
 
         self.dedent()
         self.emit("},")
         self.dedent()
         self.emit("})")
+
+        for node in deferred:
+            self.visit(node)
 
     def flush_subsection(self, name: str, directives: List[Directive]):
         if not directives:
@@ -408,6 +433,7 @@ class Codegen:
             self.emit_section_config(stmt.name, stmt.body)
         else:
             self.translated_count += 1
+            deferred: List[BlockStmt] = []
             self.emit(f"hl.config({{")
             self.indent()
             self.emit(f"{stmt.name} = {{")
@@ -417,10 +443,14 @@ class Codegen:
                     self.emit(f"--{child.text[1:]}")
                 elif isinstance(child, Directive):
                     self._emit_directive(child.key, child.value)
+                elif isinstance(child, (AnimationDirective, BezierDirective, GestureDirective)):
+                    deferred.append(child)
             self.dedent()
             self.emit("},")
             self.dedent()
             self.emit("})")
+            for node in deferred:
+                self.visit(node)
             self.emit(f"-- NOTE: Section '{stmt.name}' may be a plugin or custom section; verify the output")
 
     def visit_directive(self, stmt: Directive):
@@ -565,12 +595,22 @@ class Codegen:
                     return f'{func}({{ next = false }})'
                 return f'{func}()'
 
+            if dispatcher == "resizeactive":
+                nums = params[0].split() if params else []
+                x = nums[0] if len(nums) > 0 else "0"
+                y = nums[1] if len(nums) > 1 else "0"
+                return f'{func}({{ x = {x}, y = {y}, relative = true }})'
+
+            if dispatcher == "movecurrentworkspacetomonitor":
+                mon = self.quote(params[0]) if params else '"l"'
+                return f'{func}({{ monitor = {mon} }})'
+
             if dispatcher == "movewindow":
                 if params and params[0].startswith("into_group:"):
                     return f'{func}({{ into_group = {self.quote(params[0][len("into_group:"):])} }})'
                 if params and params[0] == "out_of_group":
                     return f'{func}({{ out_of_group = true }})'
-                return self.build_dispatcher_args(params, needs_args, func)
+                return f'{func}({self.build_dispatcher_args(params, needs_args, func)})'
 
             if dispatcher == "swapwindow":
                 if params and params[0] in ("l", "r", "u", "d"):
@@ -622,6 +662,9 @@ class Codegen:
                     return f'{func}({self._build_concat_expr(resolved)})'
                 return f'{func}({self.quote(resolved)})'
 
+            if needs_args and not params:
+                return None
+
             args = self.build_dispatcher_args(params, needs_args, func)
             return f'{func}({args})' if needs_args else f'{func}()'
 
@@ -670,10 +713,15 @@ class Codegen:
         if len(params) == 1:
             p = params[0]
             if func and func == "hl.dsp.window.move":
+                dir_map = {"l": "left", "r": "right", "u": "up", "d": "down"}
                 if p.startswith("special"):
                     return f'{{ workspace = {self.quote(p)} }}'
                 if p.isdigit():
                     return f'{{ workspace = {p} }}'
+                if re.match(r'^[+-]\d+$', p):
+                    return f'{{ workspace = "{p}" }}'
+                if p in dir_map:
+                    return f'{{ direction = "{dir_map[p]}" }}'
                 return f'{{ direction = {self.quote(p)} }}'
             return self.quote(self.resolve_val(p))
 
@@ -696,52 +744,79 @@ class Codegen:
         self.dedent()
         self.emit("})")
 
+    def _emit_rule_effect(self, prop: str) -> bool:
+        words = prop.strip().replace("=", " ").split()
+        if not words:
+            return False
+        key = words[0].lower()
+        rest_words = words[1:]
+        if key in WINDOW_RULE_MAP:
+            k, v = WINDOW_RULE_MAP[key]
+            self.emit(f"{k} = {v},")
+            return True
+        if key in WINDOW_RULE_PARAM_MAP:
+            k, needs_val = WINDOW_RULE_PARAM_MAP[key]
+            if needs_val and rest_words:
+                if key in MULTI_VALUE_EFFECT_KEYS:
+                    lua_parts = ", ".join(self.to_lua_val(w) for w in rest_words)
+                    self.emit(f"{k} = {{ {lua_parts} }},")
+                elif len(rest_words) == 1:
+                    self.emit(f"{k} = {self.to_lua_val(rest_words[0])},")
+                else:
+                    self.emit(f"{k} = {self.quote(' '.join(rest_words))},")
+            else:
+                self.emit(f"{k} = true,")
+            return True
+        return False
+
     def visit_windowrule(self, stmt: WindowRule):
         self.translated_count += 1
         rule = stmt.rule
         match_params = stmt.match_params
 
-        match = {}
-        effects = {}
+        all_params = [rule.strip()] + [mp.strip() for mp in match_params]
+        explicit = [p for p in all_params if p.lower().startswith("match:")]
+        others = [p for p in all_params if p and p not in explicit]
 
-        for mp in match_params:
-            if mp.startswith("match:"):
+        match = {}
+        if explicit:
+            props = others
+            for mp in explicit:
                 rest = mp[len("match:"):].strip()
                 m = re.match(r'^([a-zA-Z0-9_-]+)(?:\s*=\s*|\s*:\s*|\s+)(.*)$', rest)
                 if m:
-                    match_key, value = m.groups()
+                    match_key, value = m.group(1), m.group(2).strip()
                 else:
-                    match_key = rest
-                    value = "true"
+                    match_key, value = rest, "true"
                 if value.lower() == "true":
                     match[match_key] = "true"
                 elif value.lower() == "false":
                     match[match_key] = "false"
                 else:
                     match[match_key] = self.quote(value)
-                continue
+        else:
+            props = [rule]
+            for mp in match_params:
+                colon_idx = mp.find(":")
+                if colon_idx > 0:
+                    prefix = mp[:colon_idx].strip()
+                    value = mp[colon_idx + 1:].strip()
+                    if value.lower() == "true":
+                        match[prefix] = "true"
+                    elif value.lower() == "false":
+                        match[prefix] = "false"
+                    else:
+                        match[prefix] = self.quote(value)
 
-            colon_idx = mp.find(":")
-            if colon_idx > 0:
-                prefix = mp[:colon_idx].strip()
-                value = mp[colon_idx + 1:].strip()
-                match_key = prefix
-                if value.lower() == "true":
-                    match[match_key] = "true"
-                elif value.lower() == "false":
-                    match[match_key] = "false"
-                else:
-                    match[match_key] = self.quote(value)
+            if not match and not stmt.is_v2:
+                if match_params:
+                    match["class"] = self.quote(match_params[0])
 
-        if not match and not stmt.is_v2:
-            if match_params:
-                class_val = match_params[0]
-                match["class"] = self.quote(class_val)
-
+        name_source = props[0] if props else rule
         self.emit("hl.window_rule({")
         self.indent()
 
-        name_str = re.sub(r'[^a-zA-Z0-9_-]', '_', rule[:20].lower())
+        name_str = re.sub(r'[^a-zA-Z0-9_-]', '_', name_source[:20].lower())
         self.emit(f'name  = "{name_str}",')
 
         self.emit("match = {")
@@ -751,29 +826,10 @@ class Codegen:
         self.dedent()
         self.emit("},")
 
-        rule_lower = rule.lower().strip()
-        applied = False
-
-        if rule_lower in WINDOW_RULE_MAP:
-            k, v = WINDOW_RULE_MAP[rule_lower]
-            self.emit(f"{k} = {v},")
-            applied = True
-        else:
-            parts = rule.split(None, 1)
-            if parts and parts[0] in WINDOW_RULE_PARAM_MAP:
-                k, needs_val = WINDOW_RULE_PARAM_MAP[parts[0]]
-                if needs_val and len(parts) > 1:
-                    val = self.to_lua_val(parts[1])
-                    self.emit(f"{k} = {val},")
-                elif needs_val:
-                    self.emit(f"{k} = true,")
-                else:
-                    self.emit(f"{k} = true,")
-                applied = True
-
-        if not applied:
-            self.flag_count += 1
-            self.emit(f'-- TODO: review rule: {self.quote(rule)}')
+        for prop in props:
+            if not self._emit_rule_effect(prop):
+                self.flag_count += 1
+                self.emit(f'-- TODO: review rule: {self.quote(prop)}')
 
         self.dedent()
         self.emit("})")
@@ -798,7 +854,9 @@ class Codegen:
             key = self._normalize_key(key)
             if not vals or not vals[0].strip():
                 continue
-            if len(vals) == 1:
+            if len(vals) == 1 and key not in MULTI_VALUE_EFFECT_KEYS:
+                self.emit(f"{key} = {self.to_lua_val(vals[0].strip())},")
+            elif len(vals) == 1:
                 parts = vals[0].split()
                 if len(parts) == 1:
                     self.emit(f"{key} = {self.to_lua_val(parts[0])},")
@@ -828,6 +886,7 @@ class Codegen:
         style = stmt.style
         speed = stmt.speed
         curve = stmt.curve
+        enabled = "true" if stmt.enabled.strip().lower() in ("1", "yes", "on", "true") else "false"
 
         try:
             float(speed)
@@ -837,11 +896,7 @@ class Codegen:
 
         style_extra = ""
         if style and style != "default":
-            if " " in style:
-                style_name, *style_args = style.split()
-                style_extra = f', style = {self.quote(style)}'
-            else:
-                style_extra = f', style = {self.quote(style)}'
+            style_extra = f', style = {self.quote(style)}'
 
         if curve and curve != "default":
             if re.match(r'^\d+(\.\d+)?$', curve):
@@ -851,13 +906,13 @@ class Codegen:
                 spring_parts = curve.split()
                 if len(spring_parts) >= 4:
                     self.passthrough_count += 1
-                    self.emit(f'hl.animation({{ leaf = "{name}", enabled = true, speed = {speed_lit}, spring = {self.quote(curve)}{style_extra} }})')
+                    self.emit(f'hl.animation({{ leaf = "{name}", enabled = {enabled}, speed = {speed_lit}, spring = {self.quote(curve)}{style_extra} }})')
                 else:
-                    self.emit(f'hl.animation({{ leaf = "{name}", enabled = true, speed = {speed_lit}, spring = {self.quote(curve)}{style_extra} }})')
+                    self.emit(f'hl.animation({{ leaf = "{name}", enabled = {enabled}, speed = {speed_lit}, spring = {self.quote(curve)}{style_extra} }})')
             else:
-                self.emit(f'hl.animation({{ leaf = "{name}", enabled = true, speed = {speed_lit}, bezier = {self.quote(curve)}{style_extra} }})')
+                self.emit(f'hl.animation({{ leaf = "{name}", enabled = {enabled}, speed = {speed_lit}, bezier = {self.quote(curve)}{style_extra} }})')
         else:
-            self.emit(f'hl.animation({{ leaf = "{name}", enabled = true, speed = {speed_lit}{style_extra} }})')
+            self.emit(f'hl.animation({{ leaf = "{name}", enabled = {enabled}, speed = {speed_lit}{style_extra} }})')
 
     def visit_bezier(self, stmt: BezierDirective):
         self.translated_count += 1
@@ -972,8 +1027,18 @@ class Codegen:
 
     def visit_layerrule(self, stmt: LayerRuleDirective):
         self.translated_count += 1
-        rule_lower = stmt.rule.lower()
-        ns = stmt.namespace
+        rule_raw = stmt.rule.strip()
+        ns = stmt.namespace.strip()
+
+        if ns.lower().startswith("match:"):
+            ns = ns[len("match:"):].strip()
+        m = re.match(r'^namespace\s*(?:=|:)?\s*(.+)$', ns, re.IGNORECASE)
+        if m:
+            ns = m.group(1).strip()
+
+        norm_words = rule_raw.replace("=", " ").split()
+        key = norm_words[0].lower() if norm_words else ""
+        value = " ".join(norm_words[1:]) if len(norm_words) > 1 else None
 
         self.emit("hl.layer_rule({")
         self.indent()
@@ -983,16 +1048,19 @@ class Codegen:
         self.dedent()
         self.emit("},")
 
-        if rule_lower in LAYER_RULE_MAP:
-            k, v = LAYER_RULE_MAP[rule_lower]
-            if v == "true":
+        applied = False
+        if key in LAYER_RULE_MAP:
+            k, v = LAYER_RULE_MAP[key]
+            if isinstance(v, str) and v in ("true", "false"):
                 self.emit(f"{k} = {v},")
+            elif value:
+                self.emit(f"{k} = {self.to_lua_val(value)},")
             else:
-                self.emit(f"{k} = {self.to_lua_val(v)},")
-        else:
-            parts = rule_lower.split(None, 1)
-            if parts:
-                self.emit(f"{parts[0]} = {self.quote(parts[1]) if len(parts) > 1 else 'true'},")
+                self.emit(f"{k} = true,")
+            applied = True
+
+        if not applied and key:
+            self.emit(f"{norm_words[0]} = {self.quote(' '.join(norm_words[1:])) if len(norm_words) > 1 else 'true'},")
 
         self.dedent()
         self.emit("})")
@@ -1016,7 +1084,9 @@ class Codegen:
             key = self._normalize_key(key)
             if not vals or not vals[0].strip():
                 continue
-            if len(vals) == 1:
+            if len(vals) == 1 and key not in MULTI_VALUE_EFFECT_KEYS:
+                self.emit(f"{key} = {self.to_lua_val(vals[0].strip())},")
+            elif len(vals) == 1:
                 parts = vals[0].split()
                 if len(parts) == 1:
                     self.emit(f"{key} = {self.to_lua_val(parts[0])},")

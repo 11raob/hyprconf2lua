@@ -136,22 +136,34 @@ class Parser:
         return VariableDef(name_t.value, val, name_t.line)
 
     def parse_value_rest(self) -> str:
-        parts = []
-        while self.peek().type in ("IDENT", "STRING", "DOLLAR", "SHELL_EXP", "DOT", "COLON") or \
+        parts: List[tuple] = []
+        prev_end: Optional[int] = None
+        while self.peek().type in ("IDENT", "STRING", "SHELL_EXP", "DOLLAR", "DOT", "COLON", "COMMA") or \
               (self.peek().type == "EQUALS" and parts):
             if self.peek().type == "COMMENT":
                 break
+            gap = prev_end is not None and self.peek().col > prev_end
             t = self.advance()
             if t.type == "DOLLAR":
                 var_t = self.expect("IDENT")
-                parts.append("$" + var_t.value)
+                parts.append(("$" + var_t.value, gap))
+                prev_end = var_t.col + len(var_t.value)
             else:
-                parts.append(t.value)
+                parts.append((t.value, gap))
+                prev_end = t.col + len(t.value)
             if self.peek().type == "DOT":
+                dt = self.peek()
+                dgap = dt.col > prev_end
                 self.advance()
-                parts.append(".")
+                parts.append((".", dgap))
+                prev_end = dt.col + 1
 
-        return self._join_tokens(parts)
+        if not parts:
+            return ""
+        result = parts[0][0]
+        for text, had_gap in parts[1:]:
+            result += (" " + text) if had_gap else text
+        return result.strip()
 
     @staticmethod
     def _join_tokens(tokens: List[str]) -> str:
@@ -159,7 +171,7 @@ class Parser:
             return ""
         result = tokens[0]
         for t in tokens[1:]:
-            no_space_before = {":", ",", "=", "+", "-", "%", "@", "^", "*", "|", "~"}
+            no_space_before = {":", ",", "=", "+", "%", "@", "^", "*", "~"}
             no_space_after = {":", ",", "=", "."}
             if t in no_space_before or result[-1:] in no_space_after or t.startswith(("/", ".")):
                 result += t
@@ -260,7 +272,7 @@ class Parser:
         if directive == "gesture":
             if self.peek().type == "BLOCK_OPEN":
                 return self.parse_gesture(t.line)
-            return self.parse_general_directive(directive, t.line)
+            return self.parse_gesture_inline(t.line)
         if directive == "workspace":
             return self.parse_workspace(t.line)
         if directive == "layerrule":
@@ -443,10 +455,11 @@ class Parser:
         self.expect("EQUALS")
         values = self.parse_comma_values()
         name = values[0].strip() if len(values) > 0 else ""
-        style = values[1].strip() if len(values) > 1 else ""
+        enabled = values[1].strip() if len(values) > 1 else "1"
         speed = values[2].strip() if len(values) > 2 else "1"
         curve = values[3].strip() if len(values) > 3 else "default"
-        return AnimationDirective(name, style, speed, curve, line)
+        style = " ".join(v.strip() for v in values[4:] if v.strip())
+        return AnimationDirective(name, style, speed, curve, line, enabled)
 
     def parse_bezier(self, line: int) -> BezierDirective:
         self.expect("EQUALS")
@@ -488,11 +501,20 @@ class Parser:
                 key_t = self.advance()
                 self.expect("EQUALS")
                 val = self.parse_value_rest()
-                body.append(Directive(key_t.value, [val], key_t.line, 0))
+                if val.strip():
+                    body.append(Directive(key_t.value, [val], key_t.line, 0))
             else:
                 self.advance()
             self.skip_newlines()
         self.expect("BLOCK_CLOSE")
+        return GestureDirective(body, line)
+
+    def parse_gesture_inline(self, line: int) -> GestureDirective:
+        self.expect("EQUALS")
+        values = self.parse_comma_values()
+        names = ["fingers", "direction", "action"]
+        body = [Directive(names[i], [v], line, 0)
+                for i, v in enumerate(values) if v.strip() and i < len(names)]
         return GestureDirective(body, line)
 
     def parse_device(self, name: str, line: int) -> DeviceSection:
